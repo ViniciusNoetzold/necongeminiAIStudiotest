@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
 import ReactMarkdown from "react-markdown";
@@ -37,6 +37,7 @@ const styles = `
     height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow: hidden; /* Prevent body scroll, let containers scroll */
   }
   * { box-sizing: border-box; }
   
@@ -57,6 +58,7 @@ const styles = `
     padding: 1rem 0;
     margin-bottom: 1rem;
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
   }
   .title {
     font-size: 1.5rem;
@@ -77,6 +79,7 @@ const styles = `
     padding: 0.25rem;
     border-radius: 0.75rem;
     width: fit-content;
+    flex-shrink: 0;
   }
   .tab {
     padding: 0.5rem 1rem;
@@ -103,6 +106,7 @@ const styles = `
     border: 1px solid var(--border);
     position: relative;
     box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    min-height: 0; /* Important for flex child scrolling */
   }
 
   /* Chat Styles */
@@ -178,6 +182,7 @@ const styles = `
     gap: 0.75rem;
     background: var(--surface);
     align-items: flex-end;
+    flex-shrink: 0;
   }
   .textarea-wrapper {
     flex: 1;
@@ -624,7 +629,7 @@ function LiveMode({ ai }: { ai: GoogleGenAI }) {
   
   // Refs
   const audioContextsRef = useRef<{ input?: AudioContext; output?: AudioContext }>({});
-  const sessionRef = useRef<any>(null);
+  const sessionRef = useRef<any>(null); // To store session if needed for cleanup
   const nextStartTimeRef = useRef<number>(0);
   const sourceNodesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const streamRef = useRef<MediaStream | null>(null);
@@ -639,27 +644,6 @@ function LiveMode({ ai }: { ai: GoogleGenAI }) {
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       audioContextsRef.current = { input: inputCtx, output: outputCtx };
-
-      // Input pipeline
-      const source = inputCtx.createMediaStreamSource(stream);
-      const processor = inputCtx.createScriptProcessor(4096, 1, 1);
-      
-      processor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        // Calculate volume for visualizer
-        let sum = 0;
-        for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
-        const rms = Math.sqrt(sum / inputData.length);
-        setVolume(Math.min(rms * 8, 1)); // Sensitivity
-
-        const pcmBlob = createBlob(inputData);
-        if (sessionRef.current) {
-          sessionRef.current.sendRealtimeInput({ media: pcmBlob });
-        }
-      };
-
-      source.connect(processor);
-      processor.connect(inputCtx.destination);
 
       setStatus("Connecting to Gemini...");
       
@@ -677,6 +661,29 @@ function LiveMode({ ai }: { ai: GoogleGenAI }) {
             console.log("Live session opened");
             setStatus("Connected! Speak now.");
             setConnected(true);
+            
+            // Start Audio Stream AFTER connection is open
+            const source = inputCtx.createMediaStreamSource(stream);
+            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+            
+            processor.onaudioprocess = (e) => {
+              const inputData = e.inputBuffer.getChannelData(0);
+              
+              // Calculate volume for visualizer
+              let sum = 0;
+              for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
+              const rms = Math.sqrt(sum / inputData.length);
+              setVolume(Math.min(rms * 8, 1)); 
+
+              const pcmBlob = createBlob(inputData);
+              // CRITICAL: Use the sessionPromise to send data to ensure it is ready
+              sessionPromise.then(session => {
+                  session.sendRealtimeInput({ media: pcmBlob });
+              });
+            };
+
+            source.connect(processor);
+            processor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
              const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
