@@ -1,0 +1,7 @@
+{
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "description": "Gemini AI Playground with Chat and Live Voice.",
+  "name": "App"
+}
